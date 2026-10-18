@@ -34,6 +34,7 @@ async function run() {
                 constructor() { super(); this.processors = {}; this.commands = {}; this.manifest = { version: '1.5.0' }; }
                 registerMarkdownCodeBlockProcessor(name, callback) { this.processors[name] = callback; }
                 addCommand(command) { this.commands[command.id] = command; }
+                addRibbonIcon(icon, title, callback) { this.ribbon = { icon: icon, title: title, click: callback }; }
                 addSettingTab(tab) { this.settingsTab = tab; }
                 registerObsidianProtocolHandler() {}
             }

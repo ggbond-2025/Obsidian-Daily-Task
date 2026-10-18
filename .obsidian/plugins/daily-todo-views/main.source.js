@@ -357,6 +357,7 @@ class DailyTodoSettings extends PluginSettingTab {
 module.exports = class DailyTodoViews extends Plugin {
     onload() {
         const plugin = this;
+        this.addRibbonIcon('calendar-plus', '创建明日待办', this.createNextDailySafely.bind(this));
         this.addCommand({
             id: 'edit-deadline', name: '设置截止日期与时间',
             editorCheckCallback: function (checking, editor) {
@@ -430,6 +431,20 @@ module.exports = class DailyTodoViews extends Plugin {
             repaired = true;
         }
         if (repaired) { this.app.workspace.trigger('obsidian-tasks-plugin:cache-update'); }
+    }
+
+    createNextDailySafely() {
+        const previous = this.dailyCreation || Promise.resolve();
+        this.dailyCreation = previous.catch(function () {}).then(async function () {
+            try {
+                let date = core.addDays(core.dateKey(new Date()), 1);
+                while (this.app.vault.getAbstractFileByPath('To do/' + date + '.md')) {
+                    date = core.addDays(date, 1);
+                }
+                await this.openDaily(date);
+            } catch (error) { new Notice('创建明日待办失败：' + error.message); }
+        }.bind(this));
+        return this.dailyCreation;
     }
 
     async openWeeklySafely() {
