@@ -1,0 +1,127 @@
+.daily-todo-fold .daily-todo-hidden,
+.daily-todo-fold [hidden] {
+    display: none !important;
+}
+.daily-todo-content .tasks-count { display: none; }
+.daily-todo-footer {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 18px;
+    font-size: var(--font-smallest, 13px);
+}
+.daily-todo-count { color: var(--text-muted, #666); }
+.daily-todo-more {
+    min-height: 36px;
+    border: 1px solid var(--background-modifier-border, #d8d8d3);
+    border-radius: 6px;
+    padding: 6px 10px;
+    background: var(--background-secondary, #eeede8);
+    color: var(--text-normal, #292b2c);
+}
+.daily-todo-calendar { margin-top: 16px; container-type: inline-size; }
+.daily-todo-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.daily-todo-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.daily-todo-controls button {
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 1px solid var(--background-modifier-border, #d8d8d3);
+    border-radius: 6px;
+    background: var(--background-primary, #fff);
+    color: var(--text-normal, #292b2c);
+}
+.daily-todo-controls button[aria-pressed="true"] {
+    background: var(--interactive-accent, #526b9c);
+    color: var(--text-on-accent, #fff);
+}
+.daily-todo-calendar-help { color: var(--text-muted, #666); font-size: 13px; }
+.daily-todo-clock { margin-top: 0; color: var(--text-muted, #666); font-size: 12px; font-variant-numeric: tabular-nums; }
+.daily-todo-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    align-items: start;
+    gap: 6px;
+}
+.daily-todo-weekday { text-align: center; padding: 8px 0; color: var(--text-muted, #666); font-size: 13px; }
+.daily-todo-day {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    aspect-ratio: 1 / 1;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: 112px;
+    padding: 8px;
+    border: 1px solid var(--background-modifier-border, #d8d8d3);
+    border-radius: 8px;
+    background: var(--background-primary, #fff);
+    overflow-wrap: anywhere;
+}
+.daily-todo-day.is-today { border-color: var(--interactive-accent, #526b9c); box-shadow: inset 0 0 0 1px var(--interactive-accent, #526b9c); }
+.daily-todo-day.is-other-month { background: var(--background-secondary, #eeede8); }
+.daily-todo-date {
+    align-self: flex-start;
+    min-height: 28px;
+    padding: 2px 4px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-normal, #292b2c);
+    font-weight: 600;
+}
+.daily-todo-stats { display: grid; gap: 4px; width: 100%; margin: auto 0 0; }
+.daily-todo-stat { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.daily-todo-stat dt { margin: 0; color: var(--text-muted, #666); font-size: 12px; white-space: nowrap; }
+.daily-todo-stat dd { margin: 0; font-size: 16px; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
+.daily-todo-stat.is-pending dd { color: var(--text-normal, #292b2c); }
+.daily-todo-stat.is-completed dd { color: var(--color-green, #327557); }
+.daily-todo-stat.is-soon dd { color: var(--color-orange, #a85a19); }
+.daily-todo-stat dd.is-zero { color: var(--text-faint, #888); font-weight: 400; }
+.daily-todo-calendar button:focus-visible,
+.daily-todo-more:focus-visible { outline: 2px solid var(--interactive-accent, #526b9c); outline-offset: 2px; }
+@container (max-width: 600px) {
+    .daily-todo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .daily-todo-weekday { display: none; }
+    .daily-todo-controls button, .daily-todo-date { min-height: 44px; }
+    .daily-todo-day { min-height: 128px; }
+}
+@container (max-width: 320px) { .daily-todo-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .daily-todo-more { min-height: 44px; } }
+.daily-todo-deadline-modal .daily-todo-deadline-field {
+    display: grid;
+    gap: 6px;
+    margin: 12px 0;
+    min-width: 0;
+}
+.daily-todo-deadline-modal input,
+.daily-todo-deadline-modal select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    min-height: 36px;
+    font: inherit;
+}
+.daily-todo-deadline-time { white-space: nowrap; }
+.daily-todo-deadline-modal .daily-todo-time-selects {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+.daily-todo-deadline-preview { overflow-wrap: anywhere; }
+.daily-todo-deadline-error { color: var(--text-error, #b42318); }
+.daily-todo-deadline-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+.daily-todo-deadline-modal { max-width: calc(100vw - 32px); }

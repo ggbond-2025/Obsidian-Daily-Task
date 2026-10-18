@@ -1,0 +1,9 @@
+{
+  "id": "daily-todo-views",
+  "name": "每日待办视图",
+  "version": "1.5.0",
+  "minAppVersion": "1.8.0",
+  "description": "为 Tasks 提供截止日期时间弹窗、按分钟判断截止、任务折叠、统计日历及自动创建周总览。",
+  "author": "Local",
+  "isDesktopOnly": false
+}

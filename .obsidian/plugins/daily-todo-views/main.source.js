@@ -1,0 +1,491 @@
+const { Plugin, Component, MarkdownRenderChild, MarkdownRenderer, PluginSettingTab, Modal, Notice } = require('obsidian');
+const core = require('./core');
+
+const PREVIEW_LIMIT = 5;
+const OVERVIEW_FOLDER = '总览';
+const WEEKLY_FOLDER = OVERVIEW_FOLDER + '/周任务总览';
+
+function element(parent, tag, className, text) {
+    const node = parent.ownerDocument.createElement(tag);
+    if (className) { node.className = className; }
+    if (text) { node.textContent = text; }
+    parent.appendChild(node);
+    return node;
+}
+
+function button(parent, text, action, label) {
+    const node = element(parent, 'button', '', text);
+    node.type = 'button';
+    if (label) { node.setAttribute('aria-label', label); }
+    node.addEventListener('click', action);
+    return node;
+}
+
+class DeadlineModal extends Modal {
+    constructor(app, line, onSave) {
+        super(app);
+        this.line = line;
+        this.saveTask = onSave;
+    }
+
+    field(parent, title, tag) {
+        const label = element(parent, 'label', 'daily-todo-deadline-field');
+        element(label, 'span', '', title);
+        const input = element(label, tag, '');
+        input.setAttribute('aria-label', title);
+        return input;
+    }
+
+    onOpen() {
+        this.modalEl.classList.add('daily-todo-deadline-modal');
+        const fields = core.deadlineFields(this.line);
+        element(this.contentEl, 'h2', '', '设置截止日期与时间');
+        element(this.contentEl, 'p', 'daily-todo-deadline-preview', this.line);
+        const form = element(this.contentEl, 'form', '');
+        this.date = this.field(form, '截止日期', 'input');
+        this.date.type = 'date';
+        this.date.required = true;
+        this.date.value = fields.date || core.dateKey(new Date());
+        const selectors = element(form, 'div', 'daily-todo-time-selects');
+        this.hour = this.field(selectors, '小时', 'select');
+        this.minute = this.field(selectors, '分钟', 'select');
+        for (const item of [[this.hour, 24], [this.minute, 60]]) {
+            element(item[0], 'option', '', '--').value = '';
+            for (let value = 0; value < item[1]; value++) {
+                const text = String(value).padStart(2, '0');
+                element(item[0], 'option', '', text).value = text;
+            }
+            item[0].addEventListener('change', this.selectTime.bind(this));
+        }
+        this.time = this.field(form, '手动输入时间', 'input');
+        this.time.type = 'text';
+        this.time.placeholder = 'HH:mm，例如 18:30';
+        this.time.maxLength = 5;
+        this.time.value = fields.time;
+        this.time.addEventListener('input', this.syncSelectors.bind(this));
+        this.syncSelectors();
+        element(form, 'p', 'setting-item-description', '24 小时制。时间留空则保留截止日整天期限；保存后时间位于日期后面。');
+        this.error = element(form, 'p', 'daily-todo-deadline-error');
+        this.error.setAttribute('role', 'alert');
+        const actions = element(form, 'div', 'daily-todo-deadline-actions');
+        button(actions, '清除时间', function () { this.time.value = ''; this.syncSelectors(); }.bind(this));
+        button(actions, '取消', this.close.bind(this));
+        const save = element(actions, 'button', 'mod-cta', '保存');
+        save.type = 'submit';
+        form.addEventListener('submit', function (event) { event.preventDefault(); this.save(); }.bind(this));
+    }
+
+    selectTime() {
+        this.time.value = this.hour.value && this.minute.value ? this.hour.value + ':' + this.minute.value : '';
+    }
+
+    syncSelectors() {
+        const value = this.time.value;
+        if (!value || /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+            this.hour.value = value ? value.slice(0, 2) : '';
+            this.minute.value = value ? value.slice(3) : '';
+        }
+    }
+
+    save() {
+        try {
+            if (!this.time.value && Boolean(this.hour.value) !== Boolean(this.minute.value)) {
+                throw new Error('请选择完整的小时和分钟，或清除时间');
+            }
+            const line = core.setDeadline(this.line, this.date.value, this.time.value);
+            this.saveTask(line);
+            this.close();
+        } catch (error) { this.error.textContent = error.message; }
+    }
+}
+
+class FoldedTasks extends MarkdownRenderChild {
+    constructor(plugin, container, query, sourcePath) {
+        super(container);
+        this.plugin = plugin;
+        this.query = query;
+        this.sourcePath = sourcePath;
+        this.expanded = false;
+    }
+
+    onload() {
+        this.containerEl.classList.add('daily-todo-fold');
+        this.body = element(this.containerEl, 'div', 'daily-todo-content');
+        this.footer = element(this.containerEl, 'div', 'daily-todo-footer');
+        this.count = element(this.footer, 'span', 'daily-todo-count');
+        this.toggle = button(this.footer, '', this.toggleExpanded.bind(this));
+        this.toggle.className = 'daily-todo-more';
+        this.footer.hidden = true;
+        this.today = core.dateKey(new Date());
+        this.observer = new MutationObserver(this.update.bind(this));
+        this.observer.observe(this.body, { childList: true, subtree: true });
+        this.register(this.disconnect.bind(this));
+        this.timeSensitive = /^(?:due (?:on|before)|\(no due date\))/m.test(this.query);
+        this.scheduleTick();
+        this.register(function () { window.clearTimeout(this.minuteTimer); }.bind(this));
+        this.renderQuery();
+    }
+
+    disconnect() { this.observer.disconnect(); }
+
+    checkDate() {
+        const today = core.dateKey(new Date());
+        if (today !== this.today || this.timeSensitive) {
+            this.today = today;
+            this.renderQuery();
+        }
+        this.scheduleTick();
+    }
+
+    scheduleTick() {
+        this.minuteTimer = window.setTimeout(this.checkDate.bind(this), 60000 - (Date.now() % 60000));
+    }
+
+    async renderQuery() {
+        if (this.nativeRender) { this.removeChild(this.nativeRender); }
+        this.nativeRender = this.addChild(new Component());
+        this.body.replaceChildren();
+        const query = core.deadlineQuery(core.resolveQuery(this.query, this.today, this.sourcePath), new Date());
+        try {
+            await MarkdownRenderer.render(this.plugin.app, '```tasks\n' + query + '\n```', this.body, this.sourcePath, this.nativeRender);
+            this.update();
+        } catch (error) {
+            this.body.textContent = '任务视图无法加载：' + error.message;
+        }
+    }
+
+    toggleExpanded() {
+        this.expanded = !this.expanded;
+        this.update();
+    }
+
+    update() {
+        const rows = Array.from(this.body.querySelectorAll('ul.plugin-tasks-query-result > li.task-list-item'));
+        if (rows.length <= PREVIEW_LIMIT) { this.expanded = false; }
+        for (let index = 0; index < rows.length; index++) {
+            this.placeRenderedTime(rows[index]);
+            rows[index].classList.toggle('daily-todo-hidden', !this.expanded && index >= PREVIEW_LIMIT);
+        }
+        for (const heading of this.body.querySelectorAll('.tasks-group-heading')) {
+            let sibling = heading.nextElementSibling;
+            let hasVisibleTask = false;
+            while (sibling && !sibling.matches('.tasks-group-heading')) {
+                if (sibling.querySelector('li.task-list-item:not(.daily-todo-hidden)')) { hasVisibleTask = true; }
+                sibling = sibling.nextElementSibling;
+            }
+            heading.classList.toggle('daily-todo-hidden', !hasVisibleTask);
+        }
+        this.footer.hidden = rows.length === 0;
+        this.count.textContent = '共 ' + rows.length + ' 条';
+        this.toggle.hidden = rows.length <= PREVIEW_LIMIT;
+        this.toggle.setAttribute('aria-expanded', String(this.expanded));
+        this.toggle.textContent = this.expanded ? '收起至 ' + PREVIEW_LIMIT + ' 条' : '展开全部（另有 ' + (rows.length - PREVIEW_LIMIT) + ' 条）';
+    }
+
+    placeRenderedTime(row) {
+        const description = row.querySelector('.task-description');
+        const date = row.querySelector('.task-due');
+        if (!description || !date) { return; }
+        const time = core.deadlineFields(description.textContent).time;
+        if (!time) { return; }
+        const walker = description.ownerDocument.createTreeWalker(description, 4);
+        let node;
+        while ((node = walker.nextNode())) {
+            const pattern = new RegExp('🕒\\s+' + time + '(?![\\d:])');
+            if (!pattern.test(node.nodeValue)) { continue; }
+            node.nodeValue = node.nodeValue.replace(pattern, '');
+            let label = row.querySelector('.daily-todo-deadline-time');
+            if (!label) {
+                label = description.ownerDocument.createElement('span');
+                label.className = 'daily-todo-deadline-time';
+                date.insertAdjacentElement('afterend', label);
+            }
+            label.textContent = ' 🕒 ' + time;
+            return;
+        }
+    }
+}
+
+class TaskCalendar extends MarkdownRenderChild {
+    constructor(plugin, container, sourcePath, fixedWeek) {
+        super(container);
+        this.plugin = plugin;
+        this.sourcePath = sourcePath;
+        this.fixedWeek = fixedWeek;
+        this.view = fixedWeek ? 'week' : 'month';
+        this.anchor = fixedWeek || core.dateKey(new Date());
+        this.metrics = [];
+    }
+
+    onload() {
+        this.containerEl.classList.add('daily-todo-calendar');
+        this.render();
+        this.registerEvent(this.plugin.app.workspace.on('obsidian-tasks-plugin:cache-update', this.queueRefresh.bind(this)));
+        this.scheduleTick();
+        this.register(function () { window.clearTimeout(this.minuteTimer); }.bind(this));
+        this.register(function () { window.clearTimeout(this.refreshTimer); }.bind(this));
+    }
+
+    checkDate() {
+        const today = core.dateKey(new Date());
+        if (today !== this.today) { this.render(); }
+        else { this.refreshStats(); }
+        this.scheduleTick();
+    }
+
+    scheduleTick() {
+        this.minuteTimer = window.setTimeout(this.checkDate.bind(this), 60000 - (Date.now() % 60000));
+    }
+
+    queueRefresh() {
+        window.clearTimeout(this.refreshTimer);
+        this.refreshTimer = window.setTimeout(this.refreshStats.bind(this), 100);
+    }
+
+    changeView(view) {
+        this.view = view;
+        this.render();
+    }
+
+    move(amount) {
+        this.anchor = core.shiftDate(this.anchor, this.view, amount);
+        this.render();
+    }
+
+    goToday() {
+        this.anchor = core.dateKey(new Date());
+        this.render();
+    }
+
+    render() {
+        this.metrics = [];
+        this.containerEl.replaceChildren();
+        this.today = core.dateKey(new Date());
+        const toolbar = element(this.containerEl, 'div', 'daily-todo-toolbar');
+        const period = core.weekForDate(this.anchor);
+        let title = this.anchor.slice(0, 4) + ' 年 ' + Number(this.anchor.slice(5, 7)) + ' 月';
+        if (this.view === 'week') { title = period.start + ' 至 ' + period.end; }
+        element(toolbar, 'strong', 'daily-todo-period', title);
+        if (!this.fixedWeek) {
+            const controls = element(toolbar, 'div', 'daily-todo-controls');
+            const unit = this.view === 'month' ? '月' : '周';
+            button(controls, '上一' + unit, this.move.bind(this, -1));
+            button(controls, '本日', this.goToday.bind(this));
+            button(controls, '下一' + unit, this.move.bind(this, 1));
+            const month = button(controls, '月历', this.changeView.bind(this, 'month'));
+            const week = button(controls, '周历', this.changeView.bind(this, 'week'));
+            month.setAttribute('aria-pressed', String(this.view === 'month'));
+            week.setAttribute('aria-pressed', String(this.view === 'week'));
+        }
+        element(this.containerEl, 'p', 'daily-todo-calendar-help', '待完成、已完成按笔记日期统计；即将截止跨每日笔记统计，排除已到截止时间的任务，过去日期不显示。点击日期打开笔记。');
+        this.updateLabel = element(this.containerEl, 'p', 'daily-todo-clock');
+        const grid = element(this.containerEl, 'div', 'daily-todo-grid');
+        const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+        for (const day of weekdays) { element(grid, 'div', 'daily-todo-weekday', day); }
+        for (const date of core.calendarDays(this.anchor, this.view)) {
+            const cell = element(grid, 'section', 'daily-todo-day');
+            cell.setAttribute('aria-label', date);
+            if (date === this.today) { cell.classList.add('is-today'); }
+            if (this.view === 'month' && date.slice(0, 7) !== this.anchor.slice(0, 7)) { cell.classList.add('is-other-month'); }
+            const dateButton = button(cell, date.slice(5), this.openDate.bind(this, date), '打开 ' + date + ' 待办');
+            dateButton.className = 'daily-todo-date';
+            const summary = element(cell, 'dl', 'daily-todo-stats');
+            const metrics = { date: date };
+            for (const metric of [['pending', '待完成'], ['completed', '已完成'], ['soon', '即将截止']]) {
+                if (metric[0] === 'soon' && date < this.today) { continue; }
+                const row = element(summary, 'div', 'daily-todo-stat is-' + metric[0]);
+                element(row, 'dt', '', metric[1]);
+                metrics[metric[0]] = element(row, 'dd', '', '—');
+            }
+            this.metrics.push(metrics);
+        }
+        this.refreshStats();
+    }
+
+    refreshStats() {
+        const native = this.plugin.app.plugins.getPlugin('obsidian-tasks-plugin');
+        if (!native || typeof native.getTasks !== 'function') {
+            this.updateLabel.textContent = '请启用支持任务统计读取的 Tasks 插件（当前适配 8.6.0）。';
+            return;
+        }
+        if (typeof native.getState === 'function' && native.getState() !== 'Warm') {
+            this.updateLabel.textContent = 'Tasks 任务索引加载中，完成后将自动更新。';
+            return;
+        }
+        const now = new Date();
+        const counts = core.summarizeTasks(native.getTasks(), now);
+        for (const metric of this.metrics) {
+            const values = counts[metric.date] || { pending: 0, completed: 0, soon: 0 };
+            for (const key of ['pending', 'completed', 'soon']) {
+                if (!metric[key]) { continue; }
+                metric[key].textContent = String(values[key]);
+                metric[key].classList.toggle('is-zero', values[key] === 0);
+            }
+        }
+        this.updateLabel.textContent = '更新于 ' + core.dateKey(now) + ' ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    }
+
+    async openDate(date) {
+        try { await this.plugin.openDaily(date); }
+        catch (error) { new Notice('打开每日待办失败：' + error.message); }
+    }
+}
+
+class DailyTodoSettings extends PluginSettingTab {
+    constructor(app, plugin) {
+        super(app, plugin);
+        this.todoPlugin = plugin;
+    }
+
+    display() {
+        this.containerEl.replaceChildren();
+        element(this.containerEl, 'h2', '', '每日待办视图');
+        element(this.containerEl, 'p', '', '本地插件已加载，版本 ' + this.todoPlugin.manifest.version + '。');
+        const native = this.app.plugins.getPlugin('obsidian-tasks-plugin');
+        let status = 'Tasks 未启用，或当前版本不支持统计读取。';
+        if (native && typeof native.getTasks === 'function') {
+            status = 'Tasks 已启用，任务统计读取可用。';
+        }
+        element(this.containerEl, 'p', '', status);
+        element(this.containerEl, 'p', '', '任务行右键或命令面板可打开“设置截止日期与时间”。支持选择时分和手输，保存为 📅 YYYY-MM-DD 🕒 HH:mm。到时后移出即将截止，归入逾期。');
+        element(this.containerEl, 'p', '', this.todoPlugin.deadlineTaskClass ? 'Tasks 日期与时间兼容已启用。' : 'Tasks 首条任务完成索引后会自动启用日期与时间兼容。');
+        element(this.containerEl, 'p', '', '全局总览位于“总览”，周总览位于“总览/周任务总览”，使用说明位于库根目录。');
+        element(this.containerEl, 'p', '', '周总览读取 Templates/Weekly-Template.md：打开库、新的一周到来、新建或打开某天日记时自动按日期创建，已有文件只打开、不覆盖。');
+    }
+}
+
+module.exports = class DailyTodoViews extends Plugin {
+    onload() {
+        const plugin = this;
+        this.addCommand({
+            id: 'edit-deadline', name: '设置截止日期与时间',
+            editorCheckCallback: function (checking, editor) {
+                const line = editor.getLine(editor.getCursor().line);
+                const task = /^\s*(?:[-*+]|\d+[.)])\s+\[[^\]]\]\s/.test(line);
+                if (task && !checking) { plugin.openDeadlineEditor(editor); }
+                return task;
+            }
+        });
+        this.registerEvent(this.app.workspace.on('editor-menu', function (menu, editor) {
+            if (!/^\s*(?:[-*+]|\d+[.)])\s+\[[^\]]\]\s/.test(editor.getLine(editor.getCursor().line))) { return; }
+            menu.addItem(function (item) {
+                item.setTitle('设置截止日期与时间').setIcon('clock').onClick(function () { plugin.openDeadlineEditor(editor); });
+            });
+        }));
+        this.registerEvent(this.app.workspace.on('obsidian-tasks-plugin:cache-update', this.ensureDeadlineCompatibility.bind(this)));
+        this.register(function () { if (this.restoreDeadlineCompatibility) { this.restoreDeadlineCompatibility(); } }.bind(this));
+        this.ensureDeadlineCompatibility();
+        this.addSettingTab(new DailyTodoSettings(this.app, this));
+        this.registerMarkdownCodeBlockProcessor('tasks-fold', function (source, element, context) {
+            context.addChild(new FoldedTasks(plugin, element, source, context.sourcePath));
+        });
+        this.registerMarkdownCodeBlockProcessor('todo-calendar', function (source, element, context) {
+            const expanded = core.renderWeeklyTemplate(source, core.dateKey(new Date()));
+            const match = expanded.match(/^week:\s*(\d{4}-\d{2}-\d{2})\s*$/m);
+            context.addChild(new TaskCalendar(plugin, element, context.sourcePath, match ? match[1] : null));
+        });
+        this.addCommand({ id: 'open-weekly-overview', name: '打开 / 创建本周总览', callback: this.openWeeklySafely.bind(this) });
+        this.registerObsidianProtocolHandler('daily-todo-views', this.openWeeklySafely.bind(this));
+        this.app.workspace.onLayoutReady(function () { plugin.ensureDeadlineCompatibility(); plugin.ensureCurrentWeekSafely(); });
+        this.registerEvent(this.app.vault.on('create', this.onDailyCreated.bind(this)));
+        this.registerEvent(this.app.workspace.on('file-open', this.onDailyCreated.bind(this)));
+        const weeklyTimer = window.setInterval(this.ensureCurrentWeekSafely.bind(this), 60000);
+        this.register(function () { window.clearInterval(weeklyTimer); });
+    }
+
+    openDeadlineEditor(editor) {
+        const row = editor.getCursor().line;
+        const original = editor.getLine(row);
+        new DeadlineModal(this.app, original, function (line) {
+            if (editor.getLine(row) !== original) { throw new Error('任务已被修改，请关闭弹窗后重新打开'); }
+            editor.replaceRange(line, { line: row, ch: 0 }, { line: row, ch: original.length });
+        }).open();
+    }
+
+    ensureDeadlineCompatibility() {
+        const native = this.app.plugins.getPlugin('obsidian-tasks-plugin');
+        if (!native || typeof native.getTasks !== 'function') { return; }
+        const tasks = native.getTasks();
+        const sample = tasks.find(function (task) {
+            return typeof task.constructor.fromLine === 'function' && typeof task.constructor.prototype.toFileLineString === 'function';
+        });
+        if (!sample || this.deadlineTaskClass === sample.constructor) { return; }
+        if (this.restoreDeadlineCompatibility) { this.restoreDeadlineCompatibility(); }
+        this.deadlineTaskClass = sample.constructor;
+        this.restoreDeadlineCompatibility = core.installDeadlineCompatibility(sample.constructor);
+        let repaired = false;
+        for (const task of tasks) {
+            const original = task.originalMarkdown;
+            if (!original || core.clockBeforeDate(original) === original) { continue; }
+            const parsed = sample.constructor.fromLine({
+                line: original, taskLocation: task.taskLocation,
+                fallbackDate: task.scheduledDateIsInferred ? task.scheduledDate : null
+            });
+            if (!parsed) { continue; }
+            const parent = task.parent;
+            const children = task.children;
+            Object.assign(task, parsed);
+            task.parent = parent;
+            task.children = children;
+            repaired = true;
+        }
+        if (repaired) { this.app.workspace.trigger('obsidian-tasks-plugin:cache-update'); }
+    }
+
+    async openWeeklySafely() {
+        try {
+            const file = await this.ensureWeekly(core.dateKey(new Date()));
+            await this.app.workspace.getLeaf(false).openFile(file);
+        } catch (error) { new Notice('打开周总览失败：' + error.message); }
+    }
+
+    async ensureCurrentWeekSafely() {
+        const date = core.dateKey(new Date());
+        const monday = core.weekForDate(date).start;
+        if (this.lastWeekAttempt === monday) { return; }
+        this.lastWeekAttempt = monday;
+        try { await this.ensureWeekly(date); }
+        catch (error) { new Notice('自动创建本周总览失败：' + error.message); }
+    }
+
+    async onDailyCreated(file) {
+        if (!file) { return; }
+        const match = file.path.match(/^To do\/(\d{4}-\d{2}-\d{2})\.md$/);
+        if (!match) { return; }
+        try { await this.ensureWeekly(match[1]); }
+        catch (error) { new Notice('自动创建周总览失败：' + error.message); }
+    }
+
+    ensureWeekly(date) {
+        const previous = this.weekCreation || Promise.resolve();
+        this.weekCreation = previous.catch(function () {}).then(this.createWeeklyFile.bind(this, date));
+        return this.weekCreation;
+    }
+
+    async createWeeklyFile(date) {
+        const monday = core.weekForDate(date).start;
+        const path = WEEKLY_FOLDER + '/' + monday + ' 周总览.md';
+        const existing = this.app.vault.getAbstractFileByPath(path);
+        if (existing) { return existing; }
+        const templateFile = this.app.vault.getAbstractFileByPath('Templates/Weekly-Template.md');
+        if (!templateFile) { throw new Error('找不到周模板：Templates/Weekly-Template.md'); }
+        const template = await this.app.vault.read(templateFile);
+        for (const folder of [OVERVIEW_FOLDER, WEEKLY_FOLDER]) {
+            if (!this.app.vault.getAbstractFileByPath(folder)) { await this.app.vault.createFolder(folder); }
+        }
+        return this.app.vault.create(path, core.renderWeeklyTemplate(template, date));
+    }
+
+    async openDaily(date) {
+        await this.ensureWeekly(date);
+        const path = 'To do/' + date + '.md';
+        let file = this.app.vault.getAbstractFileByPath(path);
+        if (!file) {
+            const templateFile = this.app.vault.getAbstractFileByPath('Templates/Daily-Template.md');
+            const template = await this.app.vault.read(templateFile);
+            const content = template.replaceAll('{{date:YYYY-MM-DD}}', date);
+            file = await this.app.vault.create(path, content);
+        }
+        await this.app.workspace.getLeaf(false).openFile(file);
+    }
+};
